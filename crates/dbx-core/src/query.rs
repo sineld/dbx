@@ -2228,6 +2228,9 @@ async fn do_execute_typed(
             .await
             .map(|result| truncate_result_with_max_rows(result, max_rows))
         }
+        PoolKind::PluginConnection(_) => {
+            Err("SQL execution is not supported for plugin workbench connections".to_string())
+        }
         PoolKind::HBase(_) => Err("SQL execution is not supported for HBase connections".to_string()),
         PoolKind::DynamoDb(client) => {
             let client = client.clone();
@@ -3932,6 +3935,7 @@ fn pool_kind_has_transactional_path(pool: &PoolKind) -> bool {
         PoolKind::MessageQueue
         | PoolKind::Nacos
         | PoolKind::Consul(_)
+        | PoolKind::PluginConnection(_)
         | PoolKind::HBase(_)
         | PoolKind::DuckDbWorker(_)
         | PoolKind::Redis(_)
@@ -4200,7 +4204,11 @@ pub async fn execute_statements_in_transaction_on_pool_typed(
                 TxPath::Explicit
             }
             PoolKind::Agent(client) => TxPath::Agent(client.clone()),
-            PoolKind::MessageQueue | PoolKind::Nacos | PoolKind::Consul(_) | PoolKind::HBase(_) => TxPath::None,
+            PoolKind::MessageQueue
+            | PoolKind::Nacos
+            | PoolKind::Consul(_)
+            | PoolKind::PluginConnection(_)
+            | PoolKind::HBase(_) => TxPath::None,
             #[cfg(feature = "mq-admin")]
             PoolKind::Mqtt(_) => TxPath::None,
             PoolKind::DuckDbWorker(_)
@@ -6179,6 +6187,10 @@ for line in sys.stdin:
             gbase_server: String::new(),
             informix_server: String::new(),
             external_config: None,
+            plugin_id: None,
+            plugin_connection_provider: None,
+            plugin_connection_type: None,
+            connection_secrets: Default::default(),
             jdbc_driver_class: None,
             jdbc_driver_paths: Vec::new(),
             one_time: false,
@@ -7615,7 +7627,7 @@ for line in sys.stdin:
         std::fs::write(
             &executable,
             format!(
-                "#!/bin/sh\nwhile IFS= read -r line; do\n  id=$(printf '%s' \"$line\" | sed -E 's/.*\"id\":([0-9]+).*/\\1/')\n  case \"$line\" in\n    *'\"method\":\"executeQueryPage\"'*)\n      echo executeQueryPage >> '{}'\n      case \"$line\" in\n        *'left('*) printf '{{\"id\":%s,\"error\":{{\"message\":\"ERROR: invalid byte sequence for encoding \\\"UTF8\\\": 0xe2\"}}}}\\n' \"$id\" ;;\n        *) printf '{{\"id\":%s,\"result\":{{\"columns\":[\"id\",\"description\",\"__DBX_LARGE_VALUE_BYTES_T_1\"],\"column_types\":[\"integer\",\"text\",\"text\"],\"rows\":[[1,\"abcdef\",\"T:3\"]],\"affected_rows\":0,\"execution_time_ms\":1,\"truncated\":false}}}}\\n' \"$id\" ;;\n      esac\n      ;;\n    *'\"method\":\"executeQuery\"'*)\n      echo executeQuery >> '{}'\n      case \"$line\" in\n        *'left('*) printf '{{\"id\":%s,\"error\":{{\"message\":\"ERROR: invalid byte sequence for encoding \\\"UTF8\\\": 0xe2\"}}}}\\n' \"$id\" ;;\n        *) printf '{{\"id\":%s,\"result\":{{\"columns\":[\"id\",\"description\",\"__DBX_LARGE_VALUE_BYTES_T_1\"],\"column_types\":[\"integer\",\"text\",\"text\"],\"rows\":[[1,\"abcdef\",\"T:3\"]],\"affected_rows\":0,\"execution_time_ms\":1,\"truncated\":false}}}}\\n' \"$id\" ;;\n      esac\n      ;;\n  esac\ndone\n",
+                "#!/bin/sh\nwhile IFS= read -r line; do\n  id=$(printf '%s' \"$line\" | sed -E 's/.*\"id\":([0-9]+).*/\\1/')\n  case \"$line\" in\n    *'\"method\":\"executeQueryPage\"'*)\n      echo executeQueryPage >> '{}'\n      case \"$line\" in\n        *'left('*) printf '{{\"id\":%s,\"error\":{{\"message\":\"ERROR: invalid byte sequence for encoding UTF8: 0xe2\"}}}}\\n' \"$id\" ;;\n        *) printf '{{\"id\":%s,\"result\":{{\"columns\":[\"id\",\"description\",\"__DBX_LARGE_VALUE_BYTES_T_1\"],\"column_types\":[\"integer\",\"text\",\"text\"],\"rows\":[[1,\"abcdef\",\"T:3\"]],\"affected_rows\":0,\"execution_time_ms\":1,\"truncated\":false}}}}\\n' \"$id\" ;;\n      esac\n      ;;\n    *'\"method\":\"executeQuery\"'*)\n      echo executeQuery >> '{}'\n      case \"$line\" in\n        *'left('*) printf '{{\"id\":%s,\"error\":{{\"message\":\"ERROR: invalid byte sequence for encoding UTF8: 0xe2\"}}}}\\n' \"$id\" ;;\n        *) printf '{{\"id\":%s,\"result\":{{\"columns\":[\"id\",\"description\",\"__DBX_LARGE_VALUE_BYTES_T_1\"],\"column_types\":[\"integer\",\"text\",\"text\"],\"rows\":[[1,\"abcdef\",\"T:3\"]],\"affected_rows\":0,\"execution_time_ms\":1,\"truncated\":false}}}}\\n' \"$id\" ;;\n      esac\n      ;;\n  esac\ndone\n",
                 calls.display(),
                 calls.display()
             ),
@@ -7625,13 +7637,12 @@ for line in sys.stdin:
         permissions.set_mode(0o755);
         std::fs::set_permissions(&executable, permissions).unwrap();
 
-        let plugin = InstalledPlugin {
-            manifest: PluginManifest {
+        let plugin = InstalledPlugin::new(
+            PluginManifest {
                 id: "jdbc".to_string(),
                 name: "JDBC".to_string(),
                 version: "preview-retry".to_string(),
                 protocol_version: 1,
-                description: String::new(),
                 executable: Some("plugin.sh".to_string()),
                 drivers: vec![PluginDriverManifest {
                     id: "jdbc".to_string(),
@@ -7639,9 +7650,11 @@ for line in sys.stdin:
                     kind: "external".to_string(),
                     database_type: Some("jdbc".to_string()),
                 }],
+                ..PluginManifest::default()
             },
-            path: dir.clone(),
-        };
+            dir.clone(),
+            env!("CARGO_PKG_VERSION"),
+        );
         let session = PluginDriverSession::start_for_test(plugin, "jdbc".to_string(), PluginRuntimeEnv::default())
             .await
             .expect("preview retry plugin should start");
@@ -7725,13 +7738,12 @@ for line in sys.stdin:
         permissions.set_mode(0o755);
         std::fs::set_permissions(&executable, permissions).unwrap();
 
-        let plugin = InstalledPlugin {
-            manifest: PluginManifest {
+        let plugin = InstalledPlugin::new(
+            PluginManifest {
                 id: "jdbc".to_string(),
                 name: "JDBC".to_string(),
                 version: "test".to_string(),
                 protocol_version: 1,
-                description: String::new(),
                 executable: Some("plugin.sh".to_string()),
                 drivers: vec![PluginDriverManifest {
                     id: "jdbc".to_string(),
@@ -7739,9 +7751,11 @@ for line in sys.stdin:
                     kind: "external".to_string(),
                     database_type: Some("jdbc".to_string()),
                 }],
+                ..PluginManifest::default()
             },
-            path: dir.clone(),
-        };
+            dir.clone(),
+            env!("CARGO_PKG_VERSION"),
+        );
         let session = Arc::new(
             PluginDriverSession::start_for_test(plugin, "jdbc".to_string(), PluginRuntimeEnv::default())
                 .await
@@ -7831,8 +7845,8 @@ for line in sys.stdin:
         permissions.set_mode(0o755);
         std::fs::set_permissions(&executable, permissions).unwrap();
 
-        let plugin = InstalledPlugin {
-            manifest: PluginManifest {
+        let plugin = InstalledPlugin::new(
+            PluginManifest {
                 id: "jdbc".to_string(),
                 name: "JDBC".to_string(),
                 version: "legacy".to_string(),
@@ -7845,9 +7859,12 @@ for line in sys.stdin:
                     kind: "external".to_string(),
                     database_type: Some("jdbc".to_string()),
                 }],
+                contributions: Vec::new(),
+                ..PluginManifest::default()
             },
-            path: dir.clone(),
-        };
+            dir.clone(),
+            env!("CARGO_PKG_VERSION"),
+        );
         let session = PluginDriverSession::start_for_test(plugin, "jdbc".to_string(), PluginRuntimeEnv::default())
             .await
             .expect("legacy plugin should start");
@@ -7889,8 +7906,8 @@ for line in sys.stdin:
         permissions.set_mode(0o755);
         std::fs::set_permissions(&executable, permissions).unwrap();
 
-        let plugin = InstalledPlugin {
-            manifest: PluginManifest {
+        let plugin = InstalledPlugin::new(
+            PluginManifest {
                 id: "jdbc".to_string(),
                 name: "JDBC".to_string(),
                 version: "current".to_string(),
@@ -7903,9 +7920,12 @@ for line in sys.stdin:
                     kind: "external".to_string(),
                     database_type: Some("jdbc".to_string()),
                 }],
+                contributions: Vec::new(),
+                ..PluginManifest::default()
             },
-            path: dir.clone(),
-        };
+            dir.clone(),
+            env!("CARGO_PKG_VERSION"),
+        );
         let session = PluginDriverSession::start_for_test(plugin, "jdbc".to_string(), PluginRuntimeEnv::default())
             .await
             .expect("plugin should start");
@@ -8361,6 +8381,10 @@ for line in sys.stdin:
             gbase_server: String::new(),
             informix_server: String::new(),
             external_config: None,
+            plugin_id: None,
+            plugin_connection_provider: None,
+            plugin_connection_type: None,
+            connection_secrets: Default::default(),
             jdbc_driver_class: None,
             jdbc_driver_paths: Vec::new(),
             one_time: false,
