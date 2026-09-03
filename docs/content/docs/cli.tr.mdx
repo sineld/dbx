@@ -140,7 +140,7 @@ Tehlikeli olmayan yazma ifadeleri için `--allow-writes` kullanın:
 dbx query local "update users set name = 'Ada' where id = 1" --allow-writes
 ```
 
-`DROP`, `TRUNCATE` ve `ALTER` gibi tehlikeli SQL hem `--allow-writes` hem `--allow-dangerous-sql` gerektirir. Açık işlem ifadeleri CLI tarafından engellenmeye devam eder; sabitlenmiş çok adımlı oturumlar için [MCP durumlu oturumlarını](/tr/docs/mcp#stateful-query-sessions) ya da DBX düzenleyicisini kullanın.
+`DROP`, `TRUNCATE` ve `ALTER` gibi tehlikeli SQL hem `--allow-writes` hem `--allow-dangerous-sql` gerektirir. Açık işlem ifadeleri CLI tarafından engellenmeye devam eder; sabitlenmiş çok adımlı oturumlar için [MCP durumlu oturumlarını](/tr/docs/mcp) ya da DBX düzenleyicisini kullanın.
 
 Üretim veritabanlarına yapılan yazmalar ve DDL, iki bayrak da verilse bile engellenir. Üretim algılaması, SQL risk sınıflandırması, bağlantının salt okunur koruması ve veritabanı yetkileri bağımsız üst sınırlardır; bayraklar bir üretim atlatması değildir.
 
