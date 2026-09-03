@@ -374,7 +374,16 @@ export interface PluginFilesystemMutationResult {
   entry?: PluginFilesystemEntry;
 }
 
-export type PluginContribution = PluginConnectionProviderContribution | PluginWorkbenchContribution | PluginFilesystemProviderContribution;
+export interface PluginContextMenuContribution {
+  type: "context-menu";
+  id: string;
+  label: string;
+  description?: string;
+  icon?: string;
+  menu: string;
+}
+
+export type PluginContribution = PluginConnectionProviderContribution | PluginWorkbenchContribution | PluginFilesystemProviderContribution | PluginContextMenuContribution;
 
 export interface PluginEngines {
   dbx: string;
